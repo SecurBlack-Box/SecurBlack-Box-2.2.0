@@ -52,7 +52,7 @@ OFFICIAL_WEBSITE = "www.voltig.ru"
 EULA_URL = "https://www.voltig.ru/securblack-box/eula"
 
 MAGIC = b"SBX3"
-FORMAT_VERSION = 3                     # bumped due to security fixes
+FORMAT_VERSION = 3
 KEY_VAULT_DIR_NAME = ".securblack_keys"
 
 class Language(Enum):
@@ -917,7 +917,6 @@ class CryptoEngine:
             key = kdf.derive(pw_bytes)
             return key
         finally:
-            # Overwrite the temporary encoding
             for i in range(len(pw_bytes)):
                 pw_bytes[i] = 0
 
@@ -942,7 +941,6 @@ class CryptoEngine:
             raise ValueError(_("invalid_file"))
         version = vb[0]
         if version == 1:
-            # Legacy format reading preserved for inspection, but encryption/decryption now uses v3 only.
             salt = inp.read(self.config.salt_size)
             if len(salt) != self.config.salt_size:
                 raise ValueError(_("invalid_file"))
@@ -979,11 +977,7 @@ class CryptoEngine:
             meta = {"mode": "managed"}
             if metadata:
                 meta.update(metadata)
-        # Compute content hash before encryption
         content_hasher = hashlib.sha256()
-        # We need to scan the input twice: first to hash, second to encrypt.
-        # Since in_ is a file stream, we'll read all data into memory or use temporary file.
-        # For large files, this is not ideal, but we need the hash. Let's do a two-pass by seeking if possible.
         try:
             pos = in_.tell()
             in_.seek(0)
@@ -994,7 +988,6 @@ class CryptoEngine:
                 content_hasher.update(chunk)
             in_.seek(pos)
         except (io.UnsupportedOperation, AttributeError):
-            # Fallback: buffer entire plaintext (risk for huge files, but max size is limited)
             data = in_.read()
             content_hasher.update(data)
             in_ = io.BytesIO(data)
@@ -1002,7 +995,6 @@ class CryptoEngine:
         meta["content_hash"] = content_hash
 
         mbytes = self._write_header_v2(out, meta)
-        # Base AAD: magic + version + meta bytes (fixed for all chunks)
         base_aad = MAGIC + bytes([FORMAT_VERSION]) + mbytes
 
         aesgcm = AESGCM(key)
@@ -1012,11 +1004,9 @@ class CryptoEngine:
             if not plain:
                 break
             plain_len = len(plain)
-            # Build chunk-specific AAD: base_aad + chunk_index (4 bytes) + plain_len (4 bytes)
             chunk_aad = base_aad + chunk_idx.to_bytes(4, "big") + plain_len.to_bytes(4, "big")
             nonce = secrets.token_bytes(self.config.nonce_size)
             ct = aesgcm.encrypt(nonce, plain, chunk_aad)
-            # Write chunk: index, plain_len, nonce, ct_len, ciphertext
             out.write(chunk_idx.to_bytes(4, "big"))
             out.write(plain_len.to_bytes(4, "big"))
             out.write(nonce)
@@ -1074,7 +1064,6 @@ class CryptoEngine:
             ct = in_.read(ct_len)
             if len(ct) != ct_len:
                 raise ValueError(_("invalid_file"))
-            # Reconstruct AAD for this chunk
             chunk_aad = base_aad + chunk_idx.to_bytes(4, "big") + plain_len.to_bytes(4, "big")
             try:
                 plain = aesgcm.decrypt(nonce, ct, chunk_aad)
@@ -1084,7 +1073,6 @@ class CryptoEngine:
                 raise ValueError(_("invalid_file"))
             content_hasher.update(plain)
             out.write(plain)
-        # Verify overall content hash if present
         expected_hash = meta.get("content_hash")
         if expected_hash:
             actual_hash = content_hasher.hexdigest()
@@ -1102,7 +1090,6 @@ class CryptoEngine:
                 salt = KeyVaultManager._decode_bytes(meta["salt"])
                 key = self.derive_key(password, salt)
                 aesgcm = AESGCM(key)
-                # read first chunk
                 idx_raw = f.read(4)
                 if len(idx_raw) != 4:
                     return False
@@ -1212,11 +1199,9 @@ class FileHandler:
             os.makedirs(self.settings.TEMP_FILES_DIR, exist_ok=True)
             tmp = os.path.basename(original) + ".tmp"
             tmp = os.path.join(self.settings.TEMP_FILES_DIR, tmp)
-            # Ensure restrictive permissions for temp file
             fd = os.open(tmp, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
             os.close(fd)
             return tmp
-        # Use a temp file with secure permissions
         fd, tmp = tempfile.mkstemp(dir=os.path.dirname(original) or ".", suffix=".tmp")
         os.close(fd)
         os.chmod(tmp, 0o600)
@@ -1322,7 +1307,6 @@ class FileEncryptor:
             if ans.lower() != "y":
                 print_info(_("cancel"))
                 return False
-        # Do not log hashes to avoid leaking metadata
         backup_ok = True
         if create_backup:
             bp = self.fh.create_backup(file_path)
